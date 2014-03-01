@@ -9,16 +9,17 @@ use dom::bindings::codegen::InheritTypes::{CharacterDataCast, NodeBase, NodeDeri
 use dom::bindings::codegen::InheritTypes::ProcessingInstructionCast;
 use dom::bindings::js::JS;
 use dom::bindings::utils::{Reflectable, Reflector, reflect_dom_object};
-use dom::bindings::utils::{ErrorResult, Fallible, NotFound, HierarchyRequest};
+use dom::bindings::error::{ErrorResult, Fallible, NotFound, HierarchyRequest};
 use dom::bindings::utils;
 use dom::characterdata::CharacterData;
 use dom::document::Document;
 use dom::documenttype::DocumentType;
-use dom::element::{Element, ElementTypeId, HTMLAnchorElementTypeId};
+use dom::element::{Element, ElementTypeId, HTMLAnchorElementTypeId, IElement};
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
 use dom::nodelist::{NodeList};
 use dom::text::Text;
 use dom::processinginstruction::ProcessingInstruction;
+use dom::window::Window;
 use layout_interface::{LayoutChan, ReapLayoutDataMsg, UntrustedNodeAddress};
 use layout_interface::TrustedNodeAddress;
 use servo_util::str::{DOMString, null_str_as_empty};
@@ -332,7 +333,7 @@ impl NodeHelpers for JS<Node> {
     fn parent_node(&self) -> Option<JS<Node>> {
         self.get().parent_node.clone()
     }
-
+    
     fn first_child(&self) -> Option<JS<Node>> {
         self.get().first_child.clone()
     }
@@ -396,11 +397,13 @@ impl NodeHelpers for JS<Node> {
     // http://dom.spec.whatwg.org/#node-is-inserted
     fn node_inserted(&self) {
         assert!(self.parent_node().is_some());
-        let mut document = self.get().owner_doc();
+        let document = document_from_node(self);
 
-        // Register elements having "id" attribute to the owner doc.
-        if self.is_element() {
-            document.get_mut().register_nodes_with_id(&ElementCast::to(self));
+        for node in self.traverse_preorder() {
+            if node.is_element() {
+                let element: JS<Element> = ElementCast::to(&node);
+                element.bind_to_tree_impl();
+            }
         }
 
         document.get().content_changed();
@@ -409,11 +412,13 @@ impl NodeHelpers for JS<Node> {
     // http://dom.spec.whatwg.org/#node-is-removed
     fn node_removed(&self) {
         assert!(self.parent_node().is_none());
-        let mut document = self.get().owner_doc();
+        let document = document_from_node(self);
 
-        // Unregister elements having "id".
-        if self.is_element() {
-            document.get_mut().unregister_nodes_with_id(&ElementCast::to(self));
+        for node in self.traverse_preorder() {
+            if node.is_element() {
+                let element: JS<Element> = ElementCast::to(&node);
+                element.unbind_from_tree_impl();
+            }
         }
 
         document.get().content_changed();
@@ -960,7 +965,7 @@ impl Node {
         }
 
         // Step 2.
-        if node.get().owner_doc() != *document {
+        if document_from_node(node) != *document {
             for mut descendant in node.traverse_preorder() {
                 descendant.get_mut().set_owner_doc(document);
             }
@@ -1097,7 +1102,7 @@ impl Node {
         };
 
         // Step 9.
-        Node::adopt(node, &parent.get().owner_doc());
+        Node::adopt(node, &document_from_node(parent));
 
         // Step 10.
         Node::insert(node, parent, referenceChild, Unsuppressed);
@@ -1152,7 +1157,7 @@ impl Node {
     pub fn replace_all(mut node: Option<JS<Node>>, parent: &mut JS<Node>) {
         // Step 1.
         match node {
-            Some(ref mut node) => Node::adopt(node, &parent.get().owner_doc()),
+            Some(ref mut node) => Node::adopt(node, &document_from_node(parent)),
             None => (),
         }
 
@@ -1377,7 +1382,7 @@ impl Node {
         };
 
         // Step 9.
-        Node::adopt(node, &parent.get().owner_doc());
+        Node::adopt(node, &document_from_node(parent));
 
         {
             // Step 10.
@@ -1586,6 +1591,31 @@ impl Node {
     pub fn set_hover_state(&mut self, state: bool) {
         self.flags.set_is_in_hover_state(state);
     }
+
+    #[inline]
+    pub fn parent_node_ref<'a>(&'a self) -> Option<&'a JS<Node>> {
+        self.parent_node.as_ref()
+    }
+
+    #[inline]
+    pub fn first_child_ref<'a>(&'a self) -> Option<&'a JS<Node>> {
+        self.first_child.as_ref()
+    }
+
+    #[inline]
+    pub fn last_child_ref<'a>(&'a self) -> Option<&'a JS<Node>> {
+        self.last_child.as_ref()
+    }
+
+    #[inline]
+    pub fn prev_sibling_ref<'a>(&'a self) -> Option<&'a JS<Node>> {
+        self.prev_sibling.as_ref()
+    }
+
+    #[inline]
+    pub fn next_sibling_ref<'a>(&'a self) -> Option<&'a JS<Node>> {
+        self.next_sibling.as_ref()
+    }
 }
 
 impl Reflectable for Node {
@@ -1598,3 +1628,12 @@ impl Reflectable for Node {
     }
 }
 
+pub fn document_from_node<T: NodeBase>(derived: &JS<T>) -> JS<Document> {
+    let node: JS<Node> = NodeCast::from(derived);
+    node.get().owner_doc().clone()
+}
+
+pub fn window_from_node<T: NodeBase>(derived: &JS<T>) -> JS<Window> {
+    let document: JS<Document> = document_from_node(derived);
+    document.get().window.clone()
+}

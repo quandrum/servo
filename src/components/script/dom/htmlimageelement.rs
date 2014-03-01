@@ -6,12 +6,12 @@ use dom::bindings::codegen::HTMLImageElementBinding;
 use dom::bindings::codegen::InheritTypes::{NodeCast, HTMLImageElementDerived};
 use dom::bindings::codegen::InheritTypes::{ElementCast};
 use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::{Element, HTMLImageElementTypeId};
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
 use dom::htmlelement::HTMLElement;
-use dom::node::{Node, ElementNodeTypeId, NodeHelpers};
+use dom::node::{Node, ElementNodeTypeId, NodeHelpers, window_from_node};
 use extra::url::Url;
 use servo_util::geometry::to_px;
 use layout_interface::{ContentBoxQuery, ContentBoxResponse};
@@ -91,12 +91,12 @@ impl HTMLImageElement {
         if "src" == name {
             let document = self.htmlelement.element.node.owner_doc();
             let window = document.get().window.get();
-            let url = window.page.url.as_ref().map(|&(ref url, _)| url.clone());
+            let url = Some(window.get_url());
             self.update_image(Some(value), url);
         }
     }
 
-    pub fn AfterRemoveAttr(&mut self, name: DOMString) {
+    pub fn BeforeRemoveAttr(&mut self, name: DOMString) {
         if "src" == name {
             self.update_image(None, None);
         }
@@ -146,8 +146,8 @@ impl HTMLImageElement {
 
     pub fn Width(&self, abstract_self: &JS<HTMLImageElement>) -> u32 {
         let node: JS<Node> = NodeCast::from(abstract_self);
-        let doc = node.get().owner_doc();
-        let page = doc.get().window.get().page;
+        let window = window_from_node(&node);
+        let page = window.get().page();
         let (port, chan) = Chan::new();
         let addr = node.to_trusted_node_address();
         match page.query_layout(ContentBoxQuery(addr, chan), port) {
@@ -167,7 +167,7 @@ impl HTMLImageElement {
     pub fn Height(&self, abstract_self: &JS<HTMLImageElement>) -> u32 {
         let node = &self.htmlelement.element.node;
         let doc = node.owner_doc();
-        let page = doc.get().window.get().page;
+        let page = doc.get().window.get().page();
         let (port, chan) = Chan::new();
         let this_node: JS<Node> = NodeCast::from(abstract_self);
         let addr = this_node.to_trusted_node_address();

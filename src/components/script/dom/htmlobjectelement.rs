@@ -5,7 +5,7 @@
 use dom::bindings::codegen::HTMLObjectElementBinding;
 use dom::bindings::codegen::InheritTypes::HTMLObjectElementDerived;
 use dom::bindings::js::JS;
-use dom::bindings::utils::ErrorResult;
+use dom::bindings::error::ErrorResult;
 use dom::document::Document;
 use dom::element::HTMLObjectElementTypeId;
 use dom::eventtarget::{EventTarget, NodeTargetTypeId};
@@ -75,7 +75,7 @@ impl HTMLObjectElement {
         if "data" == name {
             let document = self.htmlelement.element.node.owner_doc();
             let window = document.get().window.clone();
-            let url = window.get().page.url.as_ref().map(|&(ref url, _)| url.clone());
+            let url = Some(window.get().get_url());
             self.process_data_url(window.get().image_cache_task.clone(), url);
         }
     }

@@ -21,7 +21,6 @@ use std::unstable::raw::Box;
 use js::glue::*;
 use js::glue::{DefineFunctionWithReserved, GetObjectJSClass, RUST_OBJECT_TO_JSVAL};
 use js::glue::{js_IsObjectProxyClass, js_IsFunctionProxyClass, IsProxyHandlerFamily};
-use js::glue::{ReportError};
 use js::jsapi::{JS_AlreadyHasOwnProperty, JS_NewObject, JS_NewFunction};
 use js::jsapi::{JS_DefineProperties, JS_WrapValue, JS_ForwardGetPropertyTo};
 use js::jsapi::{JS_GetClass, JS_LinkConstructorAndPrototype, JS_GetStringCharsAndLength};
@@ -30,11 +29,11 @@ use js::jsapi::{JS_GetFunctionPrototype, JS_InternString, JS_GetFunctionObject};
 use js::jsapi::{JS_HasPropertyById, JS_GetPrototype, JS_GetGlobalForObject};
 use js::jsapi::{JS_NewUCStringCopyN, JS_DefineFunctions, JS_DefineProperty};
 use js::jsapi::{JS_ValueToString, JS_GetReservedSlot, JS_SetReservedSlot};
-use js::jsapi::{JSContext, JSObject, JSBool, jsid, JSClass, JSNative, JSTracer};
+use js::jsapi::{JSContext, JSObject, JSBool, jsid, JSClass, JSNative};
 use js::jsapi::{JSFunctionSpec, JSPropertySpec, JSVal, JSPropertyDescriptor};
 use js::jsapi::{JS_NewGlobalObject, JS_InitStandardClasses};
-use js::jsapi::{JSString, JS_CallTracer, JSTRACE_OBJECT};
-use js::jsapi::{JS_IsExceptionPending, JS_AllowGC, JS_InhibitGC};
+use js::jsapi::{JSString};
+use js::jsapi::{JS_AllowGC, JS_InhibitGC};
 use js::jsfriendapi::bindgen::JS_NewObjectWithUniqueType;
 use js::{JSPROP_ENUMERATE, JSVAL_NULL, JSCLASS_IS_GLOBAL, JSCLASS_IS_DOMJSCLASS};
 use js::{JSPROP_PERMANENT, JSID_VOID, JSPROP_NATIVE_ACCESSORS, JSPROP_GETTER};
@@ -194,11 +193,11 @@ pub fn unwrap_value<T>(val: *JSVal, proto_id: PrototypeList::id::ID, proto_depth
     }
 }
 
-pub unsafe fn squirrel_away<T>(x: @mut T) -> *Box<T> {
+pub unsafe fn squirrel_away_unique<T>(x: ~T) -> *Box<T> {
     cast::transmute(x)
 }
 
-pub unsafe fn squirrel_away_unique<T>(x: ~T) -> *Box<T> {
+pub unsafe fn squirrel_away_unboxed<T>(x: ~T) -> *T {
     cast::transmute(x)
 }
 
@@ -556,32 +555,13 @@ pub extern fn ThrowingConstructor(_cx: *JSContext, _argc: c_uint, _vp: *mut JSVa
     return 0;
 }
 
-pub trait Traceable {
-    fn trace(&self, trc: *mut JSTracer);
-}
-
-pub fn trace_reflector(tracer: *mut JSTracer, description: &str, reflector: &Reflector) {
-    unsafe {
-        description.to_c_str().with_ref(|name| {
-            (*tracer).debugPrinter = ptr::null();
-            (*tracer).debugPrintIndex = -1;
-            (*tracer).debugPrintArg = name as *libc::c_void;
-            debug!("tracing {:s}", description);
-            JS_CallTracer(tracer as *JSTracer, reflector.get_jsobject(),
-                          JSTRACE_OBJECT as u32);
-        });
-    }
-}
-
 pub fn initialize_global(global: *JSObject) {
-    let protoArray = @mut ([0 as *JSObject, ..PrototypeList::id::_ID_Count as uint]);
+    let protoArray = ~([0 as *JSObject, ..PrototypeList::id::_ID_Count as uint]);
     unsafe {
-        //XXXjdm we should be storing the box pointer instead of the inner
-        let box_ = squirrel_away(protoArray);
-        let inner = ptr::to_unsafe_ptr(&(*box_).data);
+        let box_ = squirrel_away_unboxed(protoArray);
         JS_SetReservedSlot(global,
                            DOM_PROTOTYPE_SLOT,
-                           RUST_PRIVATE_TO_JSVAL(inner as *libc::c_void));
+                           RUST_PRIVATE_TO_JSVAL(box_ as *libc::c_void));
     }
 }
 
@@ -755,21 +735,6 @@ pub fn InitIds(cx: *JSContext, specs: &[JSPropertySpec], ids: &mut [jsid]) -> bo
     true
 }
 
-#[deriving(ToStr)]
-pub enum Error {
-    FailureUnknown,
-    NotFound,
-    HierarchyRequest,
-    InvalidCharacter,
-    NotSupported,
-    InvalidState,
-    NamespaceError
-}
-
-pub type Fallible<T> = Result<T, Error>;
-
-pub type ErrorResult = Fallible<()>;
-
 pub struct EnumEntry {
     value: &'static str,
     length: uint
@@ -850,8 +815,9 @@ fn global_object_for_js_object(obj: *JSObject) -> *Box<window::Window> {
 fn cx_for_dom_reflector(obj: *JSObject) -> *JSContext {
     unsafe {
         let win = global_object_for_js_object(obj);
-        match (*win).data.page.js_info {
-            Some(ref info) => info.js_context.ptr,
+        let js_info = (*win).data.page().js_info();
+        match *js_info.get() {
+            Some(ref info) => info.js_context.borrow().ptr,
             None => fail!("no JS context for DOM global")
         }
     }
@@ -864,28 +830,6 @@ pub fn global_object_for_dom_object<T: Reflectable>(obj: &T) -> *Box<window::Win
 
 pub fn cx_for_dom_object<T: Reflectable>(obj: &T) -> *JSContext {
     cx_for_dom_reflector(obj.reflector().get_jsobject())
-}
-
-pub fn throw_method_failed_with_details<T>(cx: *JSContext,
-                                           result: Result<T, Error>,
-                                           interface: &'static str,
-                                           member: &'static str) -> JSBool {
-    assert!(result.is_err());
-    assert!(unsafe { JS_IsExceptionPending(cx) } == 0);
-    let message = format!("Method failed: {}.{}", interface, member);
-    message.with_c_str(|string| {
-        unsafe { ReportError(cx, string) };
-    });
-    return 0;
-}
-
-pub fn throw_not_in_union(cx: *JSContext, names: &'static str) -> JSBool {
-    assert!(unsafe { JS_IsExceptionPending(cx) } == 0);
-    let message = format!("argument could not be converted to any of: {}", names);
-    message.with_c_str(|string| {
-        unsafe { ReportError(cx, string) };
-    });
-    return 0;
 }
 
 /// Execute arbitrary code with the JS GC enabled, then disable it afterwards.
